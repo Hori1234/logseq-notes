@@ -18,9 +18,11 @@ platform: Windows 11 + Docker Desktop (WSL2)
 | 2 | [[MCP Stack/Firecrawl MCP]] | 8002 | Web scraping & crawling for AI agents |
 | 3 | [[MCP Stack/Elasticsearch]] | 9200 | Vector + full-text search backend |
 | 4 | [[MCP Stack/Elasticsearch MCP]] | 8003 | Query Elasticsearch via MCP |
-| 5 | [[MCP Stack/Mem0]] | 8004 | AI memory layer backed by Elasticsearch |
-| 6 | [[MCP Stack/SearXNG]] | 8080 | Privacy-respecting meta-search (JSON API) |
-| 7 | [[MCP Stack/MarkItDown MCP]] | 8005 | Convert any file/URL to Markdown |
+| 5 | [[MCP Stack/Mem0 MCP Server]] | 8004 | Streamable MCP memory layer backed by Elasticsearch |
+| 6 | [[MCP Stack/Kibana - Mem0 Memory Browser]] | 5601 | Browse and query stored memories |
+| 7 | [[Mem0 Knowledge Graph]] | 8006 | UMAP cluster map and similarity graph |
+| 8 | [[MCP Stack/SearXNG]] | 8080 | Privacy-respecting meta-search (JSON API) |
+| 9 | [[MCP Stack/MarkItDown MCP]] | 8005 | Convert any file/URL to Markdown |
 
 ## Client Configuration Guides
 
@@ -82,11 +84,8 @@ Fill in all required values:
 docker compose up -d
 ```
 
-Optional — also start Kibana (Elasticsearch UI):
-
-```powershell
-docker compose --profile kibana up -d
-```
+Kibana starts with the default compose command. Open it at
+`http://localhost:5601` after its initial startup.
 
 ### Step 4 — Verify all services are healthy
 
@@ -123,11 +122,13 @@ All services bind to `localhost` by default. If Windows Firewall prompts you whe
 | Logseq MCP | 8001 | http://localhost:8001 |
 | Firecrawl MCP | 8002 | http://localhost:8002 |
 | Elasticsearch MCP | 8003 | http://localhost:8003 |
-| Mem0 API | 8004 | http://localhost:8004 |
+| Mem0 MCP | 8004 | http://localhost:8004/mcp |
+| Mem0 health | 8004 | http://localhost:8004/health |
 | SearXNG | 8080 | http://localhost:8080 |
 | MarkItDown MCP | 8005 | http://localhost:8005 |
 | Elasticsearch | 9200 | http://localhost:9200 |
-| Kibana (optional) | 5601 | http://localhost:5601 |
+| Kibana | 5601 | http://localhost:5601 |
+| Mem0 graph dashboard | 8006 | http://localhost:8006 |
 
 ## File Structure
 
@@ -137,7 +138,8 @@ mcp-stack\
 ├── .env.example              ← copy to .env and fill in values
 ├── .env                      ← your secrets (NEVER commit!)
 ├── config\
-│   ├── mem0_server.py        ← Mem0 FastAPI server
+│   ├── mem0_mcp_server.py    ← Mem0 streamable HTTP MCP server
+│   └── mem0_graph.py         ← Memory visualization dashboard
 │   └── searxng\
 │       └── settings.yml      ← SearXNG config with JSON enabled
 └── data\

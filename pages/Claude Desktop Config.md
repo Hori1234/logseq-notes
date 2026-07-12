@@ -38,7 +38,8 @@ Add this to your `claude_desktop_config.json` to connect Claude Desktop to all s
 }
 ```
 
-> **Note:** Mem0 and SearXNG are HTTP REST APIs, not MCP protocol servers. Call them directly from tools or via a custom MCP wrapper.
+> **Note:** Mem0 is a streamable HTTP MCP server. SearXNG remains a JSON HTTP
+> API and is not included as an MCP server.
 
 ## Port Reference
 
@@ -47,11 +48,11 @@ Add this to your `claude_desktop_config.json` to connect Claude Desktop to all s
 | Logseq MCP | 8001 | http://localhost:8001/mcp |
 | Firecrawl MCP | 8002 | http://localhost:8002/mcp |
 | Elasticsearch MCP | 8003 | http://localhost:8003/mcp |
-| Mem0 REST API | 8004 | http://localhost:8004 |
+| Mem0 MCP | 8004 | http://localhost:8004/mcp |
 | SearXNG JSON API | 8080 | http://localhost:8080/search?format=json |
 | MarkItDown MCP | 8005 | http://localhost:8005/mcp |
 | Elasticsearch | 9200 | http://localhost:9200 |
-| Kibana (optional) | 5601 | http://localhost:5601 |
+| Kibana | 5601 | http://localhost:5601 |
 
 ## References
 
