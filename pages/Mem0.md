@@ -1,143 +1,110 @@
 ---
 title: Mem0
-tags: [mcp, mem0, memory, ai-agents]
+tags: [mcp, mem0, memory, ai-agents, elasticsearch]
 status: active
-source: https://github.com/mem0ai/mem0
 ---
 
-# Mem0 — AI Memory Layer
+# Mem0 - AI Memory Layer
 
-> Give your AI persistent, personalized memory that improves with every conversation — backed by [[MCP Stack/Elasticsearch]].
+Mem0 provides persistent memory for the local AI stack. It extracts facts
+from conversations with Gemma, embeds them with mxbai, and stores them in
+Elasticsearch.
 
-## What It Does
+## Architecture
 
-[Mem0](https://mem0.ai) ("mem-zero") is an intelligent memory layer for AI agents. Instead of losing context between sessions, Mem0:
-
-- **Extracts** facts and preferences from conversations using an LLM
-- **Stores** them as vector embeddings in Elasticsearch
-- **Retrieves** the most relevant memories when answering new questions
-- Uses **multi-signal retrieval**: semantic, BM25 keyword, and entity matching in parallel
-
-## Architecture in This Stack
-
-```
-AI Agent / Claude
-     │
-     ▼
-Mem0 API (port 8004)
-     │
-     ├── LLM (OpenAI/gpt-4o-mini) — extracts memories
-     │
-     └── Elasticsearch (port 9200)
-             └── Index: mem0_memories
-                   ├── Embeddings (text-embedding-3-small)
-                   └── Full-text metadata
+```text
+AnythingLLM
+    |
+    | Streamable HTTP MCP: http://localhost:8004/mcp
+    v
+Custom Mem0 MCP server
+    |-- Gemma 4 26B in LM Studio (port 1234)
+    |-- mxbai-embed-large-v1 in LM Studio (1024 dimensions)
+    `-- Elasticsearch 8.x (http://elasticsearch:9200)
+          `-- mem0_memories
 ```
 
-## API Endpoints
+## MCP tools
 
-The `config/mem0_server.py` FastAPI server exposes:
+| Tool | Purpose |
+|---|---|
+| `add_memory` | Extract and save facts from `messages` for a `user_id` |
+| `search_memories` | Semantic search using `query` and `user_id` |
+| `get_all_memories` | List all memories for a user |
+| `get_memory` | Retrieve one memory by ID |
+| `update_memory` | Replace the text of a memory |
+| `delete_memory` | Delete one memory |
+| `delete_all_memories` | Delete all memories for a user |
+| `get_memory_history` | Inspect changes to a memory |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/memories/add` | Add memories from a conversation |
-| `POST` | `/memories/search` | Semantic search for relevant memories |
-| `GET` | `/memories/{user_id}` | Get all memories for a user |
-| `DELETE` | `/memories/{memory_id}` | Delete a specific memory |
-| `DELETE` | `/memories/user/{user_id}` | Delete all memories for a user |
+The server translates user scoping to the current mem0ai API:
+`filters={"user_id": user_id}`.
 
-## Docker Compose Config
+## Connection and health
 
-```yaml
-mem0:
-  image: python:3.12-slim
-  depends_on:
-    elasticsearch:
-      condition: service_healthy
-  environment:
-    MEM0_VECTOR_STORE_PROVIDER: elasticsearch
-    MEM0_VECTOR_STORE_URL: http://elasticsearch:9200
-    MEM0_VECTOR_STORE_INDEX: mem0_memories
-    OPENAI_API_KEY: ${OPENAI_API_KEY}
-    MEM0_LLM_MODEL: gpt-4o-mini
-    MEM0_EMBEDDER_MODEL: text-embedding-3-small
-  volumes:
-    - ./config/mem0_server.py:/app/server.py:ro
-  ports:
-    - "8004:8000"
+- MCP endpoint: `http://localhost:8004/mcp`
+- Health endpoint: `http://localhost:8004/health`
+- Elasticsearch index: `mem0_memories`
+- Kibana: `http://localhost:5601`
+- Knowledge graph dashboard: `http://localhost:8006`
+
+AnythingLLM must configure mem0 as `"type": "streamable"`.
+
+## LM Studio configuration
+
+Load these models:
+
+```text
+google/gemma-4-26b-a4b-qat
+text-embedding-mxbai-embed-large-v1
 ```
 
-## Required Environment Variables
+Set Gemma's context length to **32768**. Mem0's extraction prompt is too
+large for an 8192-token context.
 
-| Variable | Description |
-|----------|-------------|
-| `OPENAI_API_KEY` | OpenAI API key (for embeddings + LLM) |
-| `MEM0_LLM_MODEL` | LLM for memory extraction (`gpt-4o-mini` recommended) |
-| `MEM0_EMBEDDER_MODEL` | Embedding model (`text-embedding-3-small`) |
-| `MEM0_VECTOR_STORE_URL` | Elasticsearch URL |
+## Elasticsearch document fields
 
-## Example Usage
+Each extracted fact is stored as a document. The memory text is
+`metadata.data`; useful fields include:
 
-### Add a memory
+| Field | Meaning |
+|---|---|
+| `metadata.data` | Extracted memory text |
+| `metadata.user_id` | User scope |
+| `metadata.created_at` | First creation time |
+| `metadata.updated_at` | Last update time |
+| `metadata.hash` | Deduplication hash |
+| `metadata.attributed_to` | User or assistant source |
+| `vector` | 1024-dimensional embedding |
 
-```bash
-curl -X POST http://localhost:8004/memories/add \
-  -H "Content-Type: application/json" \
-  -d '{
-    "messages": [
-      {"role": "user", "content": "I prefer Python over JavaScript"},
-      {"role": "assistant", "content": "Got it, I will use Python for your code examples"}
-    ],
-    "user_id": "alice"
-  }'
+## FastMCP lifecycle fix
+
+The server uses `mcp.streamable_http_app()` inside an outer Starlette
+application. The outer app reuses
+`mcp_app.router.lifespan_context`, which initializes FastMCP's session manager.
+Without this lifecycle wiring, POST requests fail with:
+
+```text
+RuntimeError: Task group is not initialized. Make sure to use run().
 ```
 
-### Search memories
-
-```bash
-curl -X POST http://localhost:8004/memories/search \
-  -H "Content-Type: application/json" \
-  -d '{"query": "programming language preferences", "user_id": "alice"}'
-```
-
-### Get all memories for a user
-
-```bash
-curl http://localhost:8004/memories/alice
-```
-
-## Alternative LLM Providers
-
-If you don't want to use OpenAI, Mem0 supports:
-
-| Provider | Set `MEM0_LLM_PROVIDER` | Notes |
-|----------|------------------------|-------|
-| OpenAI | `openai` | Default |
-| Anthropic | `anthropic` | Set `ANTHROPIC_API_KEY` |
-| Ollama | `ollama` | Fully local; set `MEM0_LLM_BASE_URL` |
-| Groq | `groq` | Set `GROQ_API_KEY` |
-
-For Ollama (fully local, no data leaves machine):
-```env
-MEM0_LLM_PROVIDER=ollama
-MEM0_LLM_BASE_URL=http://host.docker.internal:11434
-MEM0_LLM_MODEL=llama3.2
-MEM0_EMBEDDER_PROVIDER=ollama
-MEM0_EMBEDDER_MODEL=nomic-embed-text
-MEM0_EMBEDDER_DIMS=768
-```
+The server also provides `/health` and responds to bare GET `/mcp` probes from
+AnythingLLM. Actual MCP tool traffic uses POST `/mcp`.
 
 ## Troubleshooting
 
-- **"Connection refused to Elasticsearch"** — Wait for Elasticsearch to be healthy (`docker compose ps`)
-- **"OpenAI API error"** — Check `OPENAI_API_KEY` is correct and has quota
-- **Slow first memory add** — First call creates the Elasticsearch index; subsequent calls are fast
-- **Empty search results** — Add memories first, then search; index needs data
+```powershell
+docker compose ps mem0
+docker logs mem0 --tail 80
+Invoke-RestMethod http://localhost:8004/health
+```
 
-## References
+If AnythingLLM reports a 500 after recreating the container, reconnect or
+toggle the mem0 server so it creates a fresh MCP session.
 
-- [[MCP Stack]] — Back to main stack overview
-- [[MCP Stack/Elasticsearch]] — The vector store backing Mem0
-- Source: https://github.com/mem0ai/mem0
-- Docs: https://docs.mem0.ai
+## Related pages
+
+- [[Mem0 MCP Server]]
+- [[Kibana - Mem0 Memory Browser]]
+- [[Mem0 Knowledge Graph]]
+- [[MCP Stack]]

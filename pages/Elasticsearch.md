@@ -69,15 +69,16 @@ Expected response:
 
 Increase heap size in `.env` or compose file if indexing large volumes of documents.
 
-## Optional: Kibana UI
+## Kibana UI
 
-Kibana is included as an optional service in the compose file. Start it with:
+Kibana starts with the default compose command:
 
-```bash
-docker compose --profile kibana up -d
+```powershell
+docker compose up -d kibana
 ```
 
-Then open http://localhost:5601 in your browser.
+Then open http://localhost:5601. Use the `mem0_memories` data view to browse
+memory documents; the memory text is in `metadata.data`.
 
 ## Data Persistence
 

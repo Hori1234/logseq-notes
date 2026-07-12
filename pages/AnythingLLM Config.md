@@ -52,8 +52,11 @@ Open `anythingllm_mcp_servers.json` in Notepad or VS Code and replace the conten
   "mcpServers": {
 
     "logseq": {
-      "url": "http://localhost:8001/sse",
-      "type": "sse",
+      "url": "http://localhost:8001/mcp",
+      "type": "streamable",
+      "headers": {
+        "Authorization": "Bearer logseqbdBD1974"
+      },
       "anythingllm": {
         "autoStart": true
       }
@@ -75,6 +78,14 @@ Open `anythingllm_mcp_servers.json` in Notepad or VS Code and replace the conten
       }
     },
 
+    "mem0": {
+      "url": "http://localhost:8004/mcp",
+      "type": "streamable",
+      "anythingllm": {
+        "autoStart": true
+      }
+    },
+
     "markitdown": {
       "url": "http://localhost:8005/mcp",
       "type": "streamable",
@@ -87,9 +98,7 @@ Open `anythingllm_mcp_servers.json` in Notepad or VS Code and replace the conten
 }
 ```
 
-> **Why only 4 servers?**
-> - **Mem0** and **SearXNG** are plain HTTP REST APIs, not MCP-protocol servers. They are called directly by your custom agent prompts or via tool definitions — see [[#Using Mem0 and SearXNG in AnythingLLM]] below.
-> - **Elasticsearch** is accessed via the official Elastic MCP server (port 8003), not directly.
+> Mem0 is a streamable HTTP MCP server on port 8004. SearXNG remains a JSON HTTP API and is not an MCP entry in this file.
 
 ---
 
@@ -100,7 +109,7 @@ After saving the file:
 1. Open AnythingLLM Desktop
 2. Go to **Settings (⚙️)** → **Agent Configuration** → **MCP Servers**
 3. Click **🔄 Reload MCP Servers**
-4. All four servers should appear with a green ✅ status
+4. All five servers should appear with a green ✅ status
 
 If a server shows ❌ (failed), click the error icon to see the log — usually it means the Docker container isn't running yet.
 
@@ -143,9 +152,9 @@ Start a chat in your workspace and use the `@agent` directive:
 
 ---
 
-## Using Mem0 and SearXNG in AnythingLLM
+## Using SearXNG in AnythingLLM
 
-These services run as REST APIs that AnythingLLM can call via its **Custom Agent Tools** system or via **HTTP Tool** definitions.
+SearXNG runs as a JSON HTTP API that AnythingLLM can call via its **Custom Agent Tools** system or via **HTTP Tool** definitions. Mem0 is configured above as a native MCP server.
 
 ### Option A — System Prompt Integration (Simplest)
 
@@ -156,11 +165,8 @@ You have access to two additional services via HTTP:
 
 1. SearXNG search: GET http://localhost:8080/search?q={query}&format=json
    Use this to search the web for current information.
-   
-2. Mem0 memory: 
-   - Search memories: POST http://localhost:8004/memories/search {"query": "...", "user_id": "default"}
-   - Add memory: POST http://localhost:8004/memories/add {"messages": [...], "user_id": "default"}
-   Always search memories at the start of conversations to recall relevant user context.
+2. Mem0 is available through the `mem0` MCP tools. Use `search_memories` at the
+   start of a conversation and `add_memory` after important user facts appear.
 ```
 
 ### Option B — AnythingLLM Custom Agent Skill (Advanced)
@@ -179,10 +185,10 @@ See the [AnythingLLM custom skills docs](https://docs.anythingllm.com/agent/cust
 
 | Server | Port | Config Type | AnythingLLM Entry |
 |--------|------|-------------|-------------------|
-| Logseq MCP | 8001 | SSE | ✅ In JSON config |
+| Logseq MCP | 8001 | Streamable HTTP | ✅ In JSON config |
 | Firecrawl MCP | 8002 | Streamable HTTP | ✅ In JSON config |
 | Elasticsearch MCP | 8003 | Streamable HTTP | ✅ In JSON config |
-| Mem0 REST API | 8004 | Plain HTTP | Via system prompt |
+| Mem0 MCP | 8004 | Streamable HTTP | ✅ In JSON config |
 | SearXNG JSON API | 8080 | Plain HTTP | Via system prompt |
 | MarkItDown MCP | 8005 | Streamable HTTP | ✅ In JSON config |
 
@@ -202,8 +208,8 @@ See the [AnythingLLM custom skills docs](https://docs.anythingllm.com/agent/cust
    ```
 3. Test the endpoint manually:
    ```powershell
-   Invoke-RestMethod http://localhost:8001/sse
-   # Should return SSE stream or health response
+   Invoke-RestMethod http://localhost:8004/health
+   # Should return {"status":"ok",...}
    ```
 
 ### "No tools available" even after enabling
@@ -243,7 +249,7 @@ You are a powerful AI assistant with access to:
 
 **Knowledge & Memory**
 - Logseq graph (read/write notes, pages, and tasks via the `logseq` MCP tool)
-- Mem0 persistent memory at http://localhost:8004 (search at start of each session)
+- Mem0 persistent memory via the `mem0` MCP server (search at start of each session)
 
 **Research & Web**  
 - Firecrawl (scrape URLs, search the web, crawl sites via the `firecrawl` MCP tool)
@@ -266,7 +272,7 @@ Always cite sources when presenting research results.
 - [[MCP Stack/Logseq MCP]] — Logseq server details
 - [[MCP Stack/Firecrawl MCP]] — Firecrawl server details
 - [[MCP Stack/Elasticsearch MCP]] — Elasticsearch MCP details
-- [[MCP Stack/Mem0]] — Mem0 REST API details
+- [[MCP Stack/Mem0 MCP Server]] — Mem0 MCP details
 - [[MCP Stack/SearXNG]] — SearXNG JSON API details
 - [[MCP Stack/MarkItDown MCP]] — MarkItDown server details
 - [[MCP Stack/Claude Desktop Config]] — Claude Desktop setup
