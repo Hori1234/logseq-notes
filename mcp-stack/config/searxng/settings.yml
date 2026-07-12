@@ -1,0 +1,76 @@
+# SearXNG settings — JSON output format enabled
+# Place this file at ./config/searxng/settings.yml
+# See https://docs.searxng.org/admin/settings/index.html for all options
+
+use_default_settings: true
+
+general:
+  instance_name: "MCP SearXNG"
+  privacypolicy_url: false
+  donation_url: false
+  contact_url: false
+  enable_metrics: false
+
+server:
+  # Must match SEARXNG_SECRET in .env
+  secret_key: "${SEARXNG_SECRET}"
+  bind_address: "0.0.0.0"
+  port: 8080
+  base_url: "http://localhost:8080/"
+  image_proxy: true
+
+ui:
+  # Allow the JSON output format (critical for MCP/API use)
+  default_locale: ""
+  query_in_title: false
+  infinite_scroll: false
+  default_theme: simple
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Output formats — MUST include "json" for API/MCP use
+# ─────────────────────────────────────────────────────────────────────────────
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json       # ← enables /search?format=json
+    - csv
+    - rss
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Redis / Valkey cache
+# ─────────────────────────────────────────────────────────────────────────────
+redis:
+  url: redis://valkey:6379/0
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Engines — a minimal useful set; add/remove as needed
+# ─────────────────────────────────────────────────────────────────────────────
+engines:
+  - name: google
+    engine: google
+    shortcut: g
+    use_mobile_ui: false
+
+  - name: bing
+    engine: bing
+    shortcut: b
+
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    base_url: "https://en.wikipedia.org/"
+
+  - name: github
+    engine: github
+    shortcut: gh
+
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
