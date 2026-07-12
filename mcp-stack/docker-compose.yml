@@ -1,0 +1,387 @@
+###############################################################################
+# MCP Stack — docker-compose.yml
+# Optimised for Windows 11 + Docker Desktop (WSL2 backend)
+#
+# Prerequisites (Windows 11):
+#   1. Docker Desktop installed with WSL2 backend (default)
+#   2. Increase WSL2 vm.max_map_count for Elasticsearch — run ONCE in PowerShell:
+#        wsl -d docker-desktop sysctl -w vm.max_map_count=262144
+#      To make it permanent, create C:\Users\<you>\.wslconfig:
+#        [wsl2]
+#        kernelCommandLine = sysctl.vm.max_map_count=262144
+#   3. Enable WSL integration in Docker Desktop → Settings → Resources → WSL Integration
+#
+# Services:
+#   1. logseq-mcp         — Logseq MCP server (ergut/mcp-logseq)
+#   2. firecrawl-mcp      — Firecrawl MCP server (self-hosted)
+#   3. elasticsearch      — Elasticsearch 8.x cluster (port 9200)
+#   4. kibana             — Kibana UI for browsing mem0 memories (port 5601)
+#   5. elasticsearch-mcp  — Elastic MCP server (docker.elastic.co/mcp/elasticsearch)
+#   6. mem0               — Mem0 MCP server (backed by Elasticsearch)
+#   6b. mem0-graph        — Knowledge graph + cluster map dashboard (port 8006)
+#   7. searxng            — SearXNG meta-search engine (JSON output enabled)
+#   8. valkey             — Redis-compatible cache for SearXNG
+#   9. markitdown-mcp     — MarkItDown MCP server (Microsoft)
+###############################################################################
+
+name: mcp-stack
+
+###############################################################################
+# Shared networks
+###############################################################################
+networks:
+  mcp-net:
+    driver: bridge
+  elastic-net:
+    driver: bridge
+
+###############################################################################
+# Named volumes
+###############################################################################
+volumes:
+  es-data:
+  searxng-data:
+  searxng-config:
+  valkey-data:
+  mem0-history:
+  firecrawl-redis:
+
+###############################################################################
+# Services
+###############################################################################
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Logseq MCP (mcp-logseq by ergut)
+  #    Connects to a running Logseq instance via its HTTP API.
+  #    The Logseq app must run on the *host* machine and have the API enabled.
+  #
+  #    Windows 11 note: Docker Desktop resolves host.docker.internal natively —
+  #    no extra_hosts entry is needed (unlike Linux).
+  # ---------------------------------------------------------------------------
+  logseq-mcp:
+    image: python:3.12-slim
+    container_name: logseq-mcp
+    restart: unless-stopped
+    environment:
+      LOGSEQ_API_TOKEN: ${LOGSEQ_API_TOKEN:?Set LOGSEQ_API_TOKEN in .env}
+      MCP_HTTP_AUTH_TOKEN: ${MCP_HTTP_AUTH_TOKEN:?Set MCP_HTTP_AUTH_TOKEN in .env}
+      # host.docker.internal is resolved automatically by Docker Desktop on Windows
+      LOGSEQ_API_URL: ${LOGSEQ_API_URL:-http://host.docker.internal:12315}
+    command: >
+      sh -c "pip install --quiet mcp-logseq &&
+             mcp-logseq --transport http --host 0.0.0.0 --port 8001 --insecure"
+    ports:
+      - "8001:8001"
+    networks:
+      - mcp-net
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')",
+        ]
+      interval: 30s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # 2. Firecrawl MCP (self-hosted via npx firecrawl-mcp in HTTP mode)
+  #    Uses the official firecrawl-mcp npm package running as an HTTP server.
+  #    Optionally connect to a self-hosted Firecrawl API (see FIRECRAWL_API_URL).
+  #    If you only have a cloud API key, set FIRECRAWL_API_KEY and remove
+  #    FIRECRAWL_API_URL so it defaults to api.firecrawl.dev.
+  # ---------------------------------------------------------------------------
+  firecrawl-mcp:
+    image: node:22-slim
+    container_name: firecrawl-mcp
+    restart: unless-stopped
+    environment:
+      FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:?Set FIRECRAWL_API_KEY in .env}
+      FIRECRAWL_API_URL: ${FIRECRAWL_API_URL:-https://api.firecrawl.dev}
+      HTTP_STREAMABLE_SERVER: "true"
+      HOST: "0.0.0.0"
+      PORT: "3000"
+    command: npx -y firecrawl-mcp
+    ports:
+      - "8002:3000"
+    networks:
+      - mcp-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      retries: 3
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # 3. Elasticsearch 8.x
+  #    Windows 11 note:
+  #      - ulimits (memlock) is NOT required on Windows — Docker Desktop + WSL2
+  #        handles memory differently. The section is omitted here.
+  #      - vm.max_map_count must be set in WSL2 (see top of file).
+  # ---------------------------------------------------------------------------
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: elasticsearch
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:?Set ELASTIC_PASSWORD in .env}
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      - elastic-net
+      - mcp-net
+    # ulimits block intentionally omitted — not needed / unsupported on Windows Docker Desktop
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:9200/_cluster/health || exit 1",
+        ]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # 4. Kibana — UI for Elasticsearch / mem0 memory browser
+  #    Open http://localhost:5601 after startup.
+  #    Useful views:
+  #      • Discover → select index "mem0_memories" to browse all stored memories
+  #      • Dev Tools → run ES queries (e.g. GET /mem0_memories/_search)
+  #    Security is disabled on the ES container so no login is required.
+  # ---------------------------------------------------------------------------
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    container_name: kibana
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      # No credentials needed — xpack.security is disabled on the ES container
+      TELEMETRY_ENABLED: "false"
+      XPACK_REPORTING_ENABLED: "false"
+    ports:
+      - "5601:5601"
+    networks:
+      - elastic-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:5601/api/status || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+  # ---------------------------------------------------------------------------
+  # 5. Elasticsearch MCP server (official Elastic image)
+  #    Runs in HTTP/streamable mode so multiple clients can connect.
+  # ---------------------------------------------------------------------------
+  elasticsearch-mcp:
+    image: docker.elastic.co/mcp/elasticsearch:latest
+    container_name: elasticsearch-mcp
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      ES_URL: http://elasticsearch:9200
+      ES_USERNAME: ${ELASTIC_USERNAME:-elastic}
+      ES_PASSWORD: ${ELASTIC_PASSWORD:?Set ELASTIC_PASSWORD in .env}
+      ES_SSL_SKIP_VERIFY: "true"
+    ports:
+      - "8003:8080"
+    networks:
+      - elastic-net
+      - mcp-net
+    command: http
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # 6. Mem0 MCP Server -- full Model Context Protocol server backed by Elasticsearch
+  #    Transport : Streamable HTTP  ->  POST /mcp
+  #    Tools     : add_memory, search_memories, get_all_memories, get_memory,
+  #                update_memory, delete_memory, delete_all_memories, get_memory_history
+  # ---------------------------------------------------------------------------
+  mem0:
+    image: python:3.12-slim
+    container_name: mem0
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      # Vector store
+      MEM0_VECTOR_STORE_HOST: elasticsearch
+      MEM0_VECTOR_STORE_PORT: "9200"
+      MEM0_VECTOR_STORE_INDEX: mem0_memories
+      ELASTIC_USERNAME: ${ELASTIC_USERNAME:-elastic}
+      ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:?Set ELASTIC_PASSWORD in .env}
+      # LLM (agentinc model in LM Studio)
+      MEM0_LLM_PROVIDER: ${MEM0_LLM_PROVIDER:-openai}
+      MEM0_LLM_MODEL: ${MEM0_LLM_MODEL:-google/gemma-4-26b-a4b-qat}
+      MEM0_LLM_API_KEY: ${MEM0_LLM_API_KEY:-lm-studio}
+      MEM0_LLM_BASE_URL: ${MEM0_LLM_BASE_URL:-http://host.docker.internal:1234/v1}
+      # Embedder (mxbai-embed-large-v1 in LM Studio, 1024 dims)
+      MEM0_EMBEDDER_PROVIDER: ${MEM0_EMBEDDER_PROVIDER:-openai}
+      MEM0_EMBEDDER_MODEL: ${MEM0_EMBEDDER_MODEL:-text-embedding-mxbai-embed-large-v1}
+      MEM0_EMBEDDER_API_KEY: ${MEM0_EMBEDDER_API_KEY:-lm-studio}
+      MEM0_EMBEDDER_BASE_URL: ${MEM0_EMBEDDER_BASE_URL:-http://host.docker.internal:1234/v1}
+      MEM0_EMBEDDER_DIMS: ${MEM0_EMBEDDER_DIMS:-1024}
+    volumes:
+      - mem0-history:/root/.mem0
+      - ./config/mem0_mcp_server.py:/app/server.py:ro
+    working_dir: /app
+    command: >
+      sh -c "pip install --quiet mem0ai 'elasticsearch>=8,<9' 'mcp[cli]' uvicorn starlette &&
+             python server.py"
+    ports:
+      - "8004:8000"
+    networks:
+      - elastic-net
+      - mcp-net
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      retries: 3
+      start_period: 90s
+  # ---------------------------------------------------------------------------
+  # 6b. Mem0 Knowledge Graph — interactive Dash dashboard
+  #     Tab 1: UMAP 2D cluster map (similar memories cluster together)
+  #     Tab 2: Force-directed knowledge graph (nodes = memories, edges = similarity)
+  #     Open: http://localhost:8006
+  #     NOTE: first start is slow (~3-5 min) — pip installs umap-learn + numba
+  # ---------------------------------------------------------------------------
+  mem0-graph:
+    image: python:3.12-slim
+    container_name: mem0-graph
+    restart: unless-stopped
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8050"
+      ES_HOST: elasticsearch
+      ES_PORT: "9200"
+      ES_INDEX: mem0_memories
+    volumes:
+      - ./config/mem0_graph.py:/app/server.py:ro
+    working_dir: /app
+    command: >
+      sh -c "pip install --quiet dash dash-cytoscape plotly umap-learn scikit-learn 'elasticsearch>=8,<9' numpy && python server.py"
+    ports:
+      - "8006:8050"
+    networks:
+      - elastic-net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8050/ || exit 1"]
+      interval: 30s
+      retries: 3
+      start_period: 300s
+
+  # ---------------------------------------------------------------------------
+  # 7a. Valkey (Redis-compatible) — required by SearXNG for rate-limiting
+  # ---------------------------------------------------------------------------
+  valkey:
+    image: valkey/valkey:8-alpine
+    container_name: valkey
+    restart: unless-stopped
+    command: valkey-server --save 60 1
+    volumes:
+      - valkey-data:/data
+    networks:
+      - mcp-net
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # 7b. SearXNG — privacy-respecting meta-search engine
+  #     JSON output format is enabled via settings.yml (see ./config/searxng/)
+  #
+  #     Windows 11 note: cap_drop / cap_add are Linux kernel capabilities.
+  #     Docker Desktop on Windows runs Linux containers via WSL2, so these
+  #     DO work, but they are commented out here to avoid confusion.
+  #     Uncomment them if you need tighter security hardening.
+  # ---------------------------------------------------------------------------
+  searxng:
+    image: searxng/searxng:latest
+    container_name: searxng
+    restart: unless-stopped
+    depends_on:
+      valkey:
+        condition: service_healthy
+    environment:
+      SEARXNG_BASE_URL: http://localhost:8080/
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Set SEARXNG_SECRET in .env}
+    volumes:
+      - ./config/searxng:/etc/searxng:rw
+      - searxng-data:/var/cache/searxng
+    ports:
+      - "8080:8080"
+    networks:
+      - mcp-net
+    # cap_drop / cap_add commented out for Windows Docker Desktop compatibility
+    # Uncomment for production Linux deployments:
+    # cap_drop:
+    #   - ALL
+    # cap_add:
+    #   - CHOWN
+    #   - SETGID
+    #   - SETUID
+    #   - DAC_OVERRIDE
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      retries: 3
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # 9. MarkItDown MCP — converts files/URLs to Markdown
+  #    Builds from the official Microsoft MarkItDown Dockerfile.
+  # ---------------------------------------------------------------------------
+  markitdown-mcp:
+    image: python:3.12-slim
+    container_name: markitdown-mcp
+    restart: unless-stopped
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "3001"
+    command: >
+      sh -c "pip install --quiet markitdown-mcp &&
+             markitdown-mcp --http --host 0.0.0.0 --port 3001"
+    volumes:
+      - ./data/markitdown:/workdir:ro # mount files you want converted
+    ports:
+      - "8005:3001"
+    networks:
+      - mcp-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      interval: 30s
+      retries: 3
+      start_period: 20s
